@@ -1,8 +1,11 @@
-"""보고서 초안 생성기. claude -p CLI 어댑터 + 결정론 fallback.
+"""보고서 초안 생성기.
 
-출품 1차: ClaudeCliDrafter (claude -p subprocess)
-운영 전환: AnthropicSdkDrafter (미구현)
-실패 fallback: TemplateDrafter
+어댑터(env `AI_DRAFTER`):
+- `cli`      : ClaudeCliDrafter (로컬 개발, claude -p subprocess)
+- `sdk`      : AnthropicSdkDrafter (Railway 배포, Anthropic API)
+- `template` : TemplateDrafter (AI 미사용)
+
+세 어댑터 모두 실패 시 TemplateDrafter 결과 반환 — 시연 안전.
 """
 import json
 import subprocess
@@ -93,5 +96,55 @@ class ClaudeCliDrafter:
             return result
 
 
+class AnthropicSdkDrafter:
+    """Anthropic SDK 어댑터. Railway 등 CLI 미설치 환경용."""
+
+    def __init__(self, fallback: TemplateDrafter | None = None):
+        self.fallback = fallback or TemplateDrafter()
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            try:
+                from anthropic import Anthropic
+            except ImportError as e:
+                raise RuntimeError("anthropic SDK 미설치. pip install anthropic") from e
+            if not config.ANTHROPIC_API_KEY:
+                raise RuntimeError("ANTHROPIC_API_KEY 미설정")
+            self._client = Anthropic(api_key=config.ANTHROPIC_API_KEY, timeout=config.AI_DRAFT_TIMEOUT)
+        return self._client
+
+    def draft(self, context: Dict) -> DraftResult:
+        t0 = time.time()
+        try:
+            prompt = PROMPT_PATH.read_text(encoding="utf-8").replace(
+                "{context_json}", json.dumps(context, ensure_ascii=False, indent=2)
+            )
+            client = self._get_client()
+            msg = client.messages.create(
+                model=config.ANTHROPIC_MODEL,
+                max_tokens=config.ANTHROPIC_MAX_TOKENS,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = "".join(getattr(b, "text", "") for b in msg.content).strip()
+            if not text:
+                raise RuntimeError("empty response")
+            return DraftResult(
+                text=text,
+                source="anthropic_sdk",
+                elapsed_sec=round(time.time() - t0, 3),
+                input_hash=_hash(context),
+            )
+        except Exception as e:
+            result = self.fallback.draft(context)
+            result.error = f"sdk_failed:{type(e).__name__}:{str(e)[:120]}"
+            return result
+
+
 def get_drafter():
+    mode = config.AI_DRAFTER
+    if mode == "sdk":
+        return AnthropicSdkDrafter()
+    if mode == "template":
+        return TemplateDrafter()
     return ClaudeCliDrafter()
