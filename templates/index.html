@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>AI 학교 재난영향 예측·자동보고 시스템 (데모)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 980px; margin: 2rem auto; padding: 0 1rem; background:#0b1020; color:#e6edf7; }
+  h1 { font-size: 1.4rem; }
+  .badge { display:inline-block; padding:.2rem .5rem; background:#22315a; border-radius:4px; font-size:.8rem; }
+  .alert { padding:1rem; background:#1a2444; border-radius:6px; margin:.5rem 0; cursor:pointer; }
+  .alert:hover { background:#243066; }
+  pre { background:#101830; padding:1rem; white-space:pre-wrap; border-radius:6px; }
+  .disclaimer { margin-top:1rem; padding:.6rem; background:#3a2a16; border-left:4px solid #f0a040; font-size:.9rem; }
+  button { background:#3060d0; color:white; border:0; padding:.4rem .8rem; border-radius:4px; cursor:pointer; }
+</style>
+</head>
+<body>
+<h1>AI 학교 재난영향 예측·자동보고 시스템
+  {% if demo_mode %}<span class="badge">DEMO MODE · 비식별 데이터</span>{% endif %}
+</h1>
+<p>특보를 선택하면 영향권 학교를 자동 식별하고 AI가 보고서 초안을 생성합니다.</p>
+<div id="alerts">로딩…</div>
+<hr>
+<h2>보고서 초안</h2>
+<div id="result"><em>특보를 선택하세요.</em></div>
+
+<script>
+async function loadAlerts() {
+  const r = await fetch('/api/alerts'); const data = await r.json();
+  const c = document.getElementById('alerts'); c.innerHTML = '';
+  data.forEach(a => {
+    const div = document.createElement('div');
+    div.className = 'alert';
+    div.innerHTML = `<b>${a.type} ${a.level}</b> — ${a.regions.join(', ')}<br><small>${a.summary}</small>`;
+    div.onclick = () => generate(a.id);
+    c.appendChild(div);
+  });
+}
+async function generate(alert_id) {
+  const out = document.getElementById('result');
+  out.innerHTML = '<em>생성 중… (claude -p 호출)</em>';
+  const t0 = performance.now();
+  const r = await fetch('/api/draft', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({alert_id})});
+  const j = await r.json();
+  const elapsed = ((performance.now()-t0)/1000).toFixed(2);
+  out.innerHTML = `
+    <p><b>영향학교 ${j.affected_count}개</b> · 출처 <code>${j.draft.source}</code> · 처리시간 ${elapsed}s ${j.draft.error?'· <span style="color:#f88">'+j.draft.error+'</span>':''}</p>
+    <pre>${j.draft.text.replace(/[<>]/g,c=>({'<':'&lt;','>':'&gt;'}[c]))}</pre>
+    <div class="disclaimer">⚠ ${j.disclaimer}</div>`;
+}
+loadAlerts();
+</script>
+</body>
+</html>
