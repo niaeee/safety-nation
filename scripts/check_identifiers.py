@@ -4,7 +4,12 @@
 """
 import re
 import sys
+import io
 from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
 
 ROOT = Path(__file__).resolve().parent.parent
 SCAN_DIRS = ["templates", "static", "data/demo", "ai/prompts"]
@@ -35,11 +40,11 @@ def scan() -> int:
                     hits.append((path, "학교명", m.group()))
 
     if hits:
-        print("❌ 식별정보 의심 항목 발견:")
+        print("[FAIL] 식별정보 의심 항목 발견:")
         for p, rx, sample in hits:
             print(f"  - {p.relative_to(ROOT)} : [{rx}] '{sample}'")
         return 1
-    print("✅ 식별정보 스캔 통과")
+    print("[PASS] 식별정보 스캔 통과")
     return 0
 
 
