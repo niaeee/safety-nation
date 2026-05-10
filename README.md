@@ -7,7 +7,7 @@
 
 `기상특보 입력 → 영향권 학교 자동 식별 → 룰 기반 영향도 산정 → AI(claude -p) 보고서 초안 → 담당자 결재 배지 → 처리시간 로그 저장`
 
-## 빠른 시작
+## 빠른 시작 (데모 모드)
 
 ```bash
 cd safety-nation
@@ -15,6 +15,32 @@ python -m venv .venv && .venv/Scripts/activate    # Windows
 pip install -r requirements.txt
 cp .env.example .env                              # DEMO_MODE=true
 python app.py                                     # http://localhost:5000
+```
+
+## 운영 모드 (전국 12,011개 학교)
+
+```bash
+# 1) 원본 CSV (학교알리미 표준데이터, CP949) 배치
+#    data/raw/schoolinfo/전국초중등학교위치표준데이터.csv
+
+# 2) 정규화 JSON 빌드 (멱등 실행, 표준 라이브러리만)
+python scripts/build_school_data.py
+#  → data/processed/schools.json        (12,011건)
+#  → data/processed/schools.meta.json   (시도/학교급별 통계 + 생성시각)
+#  → data/processed/schools.ulsan.json  (울산 245건, 시연/성능 테스트용)
+
+# 3) 운영 모드 실행
+DEMO_MODE=false SCHOOL_DATASET=national python app.py
+#   SCHOOL_DATASET=ulsan 로 바꾸면 울산 245개만 로드
+#   MAP_PROVIDER=vworld + VWORLD_API_KEY=... 로 VWorld 타일 전환 가능
+```
+
+### 학교 검색 API
+
+```
+GET /api/schools?region=울산&level=초&limit=10
+GET /api/schools/near?lat=37.57&lng=126.97&km=3
+GET /api/schools/map?bbox=37.4,126.7,37.7,127.2   # 지도 viewport용 경량
 ```
 
 ## E2E 처리시간 측정
@@ -41,12 +67,18 @@ safety-nation/
 │   ├── risk_engine.py      룰 기반 영향도 산정 (AI 아님 — 명확히 분리)
 │   ├── report_drafter.py   ClaudeCliDrafter + TemplateDrafter fallback
 │   └── prompts/disaster_report.md
-├── data/demo/              비식별 fixture (schools/alerts/manuals)
-├── services/               기존 코드 이식분 (exporters, weather, coordinates)
+├── data/
+│   ├── demo/               비식별 fixture (schools/alerts/manuals)
+│   ├── raw/schoolinfo/     원본 학교 위치 CSV (CP949)
+│   └── processed/          빌드 산출 JSON (전국/울산/메타)
+├── services/
+│   ├── school_data.py      DEMO/운영 분기 + lru_cache + region/level 인덱스 + Haversine 반경 검색
+│   └── (exporters, weather, coordinates 등 기존 이식분)
 ├── scripts/
+│   ├── build_school_data.py CP949 CSV → 정규화 JSON 빌더
 │   ├── benchmark_e2e.py    처리시간 측정
 │   └── check_identifiers.py 제출 전 식별정보 스캔
-├── templates/index.html    AI disclaimer 배지 포함 단일 페이지
+├── templates/index.html    Leaflet 지도 + markercluster + AI disclaimer
 └── logs/                   benchmark.jsonl (gitignore)
 ```
 

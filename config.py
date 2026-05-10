@@ -9,6 +9,10 @@ SECRET_KEY = os.getenv("SECRET_KEY", "")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 DEMO_MODE = os.getenv("DEMO_MODE", "true").lower() == "true"
+SCHOOL_DATASET = os.getenv("SCHOOL_DATASET", "national").lower()  # national | ulsan
+
+MAP_PROVIDER = os.getenv("MAP_PROVIDER", "osm").lower()  # osm | vworld
+VWORLD_API_KEY = os.getenv("VWORLD_API_KEY", "")
 
 KAKAO_API_KEY = os.getenv("KAKAO_API_KEY", "")
 KMA_API_KEY = os.getenv("KMA_API_KEY", "")

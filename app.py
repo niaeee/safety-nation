@@ -10,7 +10,13 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request
 
 import config
-from services.school_data import load_schools, load_alerts, load_manuals
+from services.school_data import (
+    load_schools,
+    load_alerts,
+    load_manuals,
+    search_schools,
+    find_within_radius,
+)
 from ai.alert_matcher import match_schools
 from ai.risk_engine import score as risk_score
 from ai.report_drafter import get_drafter
@@ -34,7 +40,12 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index():
-        return render_template("index.html", demo_mode=config.DEMO_MODE)
+        return render_template(
+            "index.html",
+            demo_mode=config.DEMO_MODE,
+            map_provider=config.MAP_PROVIDER,
+            vworld_api_key=config.VWORLD_API_KEY,
+        )
 
     @app.get("/api/alerts")
     def api_alerts():
@@ -42,7 +53,78 @@ def create_app() -> Flask:
 
     @app.get("/api/schools")
     def api_schools():
-        return jsonify(load_schools())
+        # 12K 통째 반환 방어: region/level/limit/offset 미지정이면 전체 반환하지 않음
+        region = request.args.get("region")
+        level = request.args.get("level")
+        q = request.args.get("q")
+        try:
+            limit = min(int(request.args.get("limit", 100)), 500)
+            offset = max(int(request.args.get("offset", 0)), 0)
+        except ValueError:
+            return jsonify({"error": "limit/offset must be int"}), 400
+
+        if not any([region, level, q]) and request.args.get("all") != "1":
+            return jsonify({
+                "error": "전국 전체 반환은 ?all=1 필요. 또는 region/level/q 파라미터 사용",
+                "hint": "예: /api/schools?region=울산  /api/schools?region=서울&level=초",
+            }), 400
+
+        rows = search_schools(query=q, region=region, level=level,
+                              limit=limit, offset=offset)
+        return jsonify({"count": len(rows), "limit": limit, "offset": offset, "items": rows})
+
+    @app.get("/api/schools/map")
+    def api_schools_map():
+        """지도용 경량 응답: id/이름/학교급/시도/위경도만 반환.
+
+        조회 우선순위: bbox > region > all=1
+            ?bbox=south,west,north,east  : 좌표 박스 내 학교 (지도 viewport)
+            ?region=서울                  : 시도 전체
+            ?all=1                       : 전국 (페이지네이션 없음, 주의)
+            ?level=초|중|고               : 모든 모드와 조합 가능
+        """
+        from services.school_data import find_by_region
+        bbox = request.args.get("bbox")
+        region = request.args.get("region")
+        level = request.args.get("level")
+
+        if bbox:
+            try:
+                south, west, north, east = (float(x) for x in bbox.split(","))
+            except (ValueError, AttributeError):
+                return jsonify({"error": "bbox=south,west,north,east (float)"}), 400
+            if south > north or west > east:
+                return jsonify({"error": "bbox 좌표 순서 오류 (south<=north, west<=east)"}), 400
+            base = find_by_region(region) if region else load_schools()
+            items = [s for s in base
+                     if south <= s["lat"] <= north and west <= s["lng"] <= east]
+        elif region:
+            items = find_by_region(region)
+        elif request.args.get("all") == "1":
+            items = load_schools()
+        else:
+            return jsonify({"error": "bbox 또는 region 또는 all=1 필요"}), 400
+
+        if level:
+            items = [s for s in items if s["level"] == level]
+
+        return jsonify([
+            {"id": s["id"], "n": s["name"], "lv": s["level"],
+             "r": s["region"], "lat": s["lat"], "lng": s["lng"]}
+            for s in items
+        ])
+
+    @app.get("/api/schools/near")
+    def api_schools_near():
+        try:
+            lat = float(request.args["lat"])
+            lng = float(request.args["lng"])
+            km = float(request.args.get("km", 5))
+            limit = min(int(request.args.get("limit", 50)), 500)
+        except (KeyError, ValueError):
+            return jsonify({"error": "lat,lng,km(float), limit(int) required"}), 400
+        rows = find_within_radius(lat, lng, km, limit=limit)
+        return jsonify({"count": len(rows), "center": {"lat": lat, "lng": lng}, "km": km, "items": rows})
 
     @app.post("/api/draft")
     def api_draft():
