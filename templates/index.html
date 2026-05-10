@@ -22,7 +22,25 @@
   label { font-size:.9rem; color:#a8b6d0; }
   .controls { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; margin-bottom:.6rem; }
   .map-wrap { display:grid; grid-template-columns: 1fr 280px; gap: .8rem; }
-  #map { height: 540px; border-radius:6px; }
+
+  /* 지도 셸 + 로딩 오버레이 — 마커는 그대로 두고 베일만 fade */
+  .map-shell { position: relative; height: 540px; border-radius: 6px; overflow: hidden; }
+  #map { height: 100%; }
+  .map-shell::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: rgba(11, 16, 32, 0.35);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 160ms ease;
+    z-index: 500;
+  }
+  .map-shell.is-loading::after { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) {
+    .map-shell::after { transition: none; }
+  }
+
   .info-panel { background:#1a2444; padding:.8rem; border-radius:6px; max-height:540px; overflow:auto; font-size:.9rem; line-height: 1.6; }
   .stat { font-size:.85rem; color:#a8b6d0; }
   .legend-dot { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:.4rem; }
@@ -54,7 +72,9 @@
   <span id="map-status" class="stat"></span>
 </div>
 <div class="map-wrap">
-  <div id="map"></div>
+  <div class="map-shell" id="map-shell">
+    <div id="map"></div>
+  </div>
   <div class="info-panel" id="info-panel">
     <em>지역/학교급을 선택하세요.</em>
   </div>
@@ -76,167 +96,191 @@ const VWORLD_KEY = "{{ vworld_api_key }}";
 const REGIONS = ["서울","부산","대구","인천","광주","대전","울산","세종",
                  "경기","강원","충북","충남","전북","전남","경북","경남","제주"];
 const LEVEL_COLORS = {"초":"#3ba55d","중":"#5865f2","고":"#ed4245"};
+const FLY_DURATION = 0.55;        // 초
+const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-// 시도 셀렉트 채우기
+// ---------- 시도 셀렉트 ----------
 const regionSelect = document.getElementById('region-select');
 REGIONS.forEach(r => {
   const opt = document.createElement('option');
   opt.value = r; opt.textContent = r;
   regionSelect.appendChild(opt);
 });
-regionSelect.value = DEMO_MODE ? '' : '울산';  // 데모는 전국(7개), 운영은 울산(245개)
+regionSelect.value = DEMO_MODE ? '' : '울산';
 
-// 지도 초기화 (preferCanvas: 12K 마커 모바일 성능 ↑)
+// ---------- 지도 + 타일 ----------
 const map = L.map('map', { preferCanvas: true }).setView([36.5, 127.8], 7);
-
-let tileLayer;
-if (MAP_PROVIDER === 'vworld' && VWORLD_KEY) {
-  tileLayer = L.tileLayer(
-    `https://api.vworld.kr/req/wmts/1.0.0/${VWORLD_KEY}/Base/{z}/{y}/{x}.png`,
-    { attribution: '© VWorld (국토교통부)', maxZoom: 18 }
-  );
-} else {
-  tileLayer = L.tileLayer(
-    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    { attribution: '© OpenStreetMap', maxZoom: 18 }
-  );
-}
+const tileLayer = (MAP_PROVIDER === 'vworld' && VWORLD_KEY)
+  ? L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${VWORLD_KEY}/Base/{z}/{y}/{x}.png`,
+                { attribution: '© VWorld (국토교통부)', maxZoom: 18 })
+  : L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                { attribution: '© OpenStreetMap', maxZoom: 18 });
 tileLayer.addTo(map);
 
-const cluster = L.markerClusterGroup({
-  showCoverageOnHover: false,
-  spiderfyOnMaxZoom: true,
-  maxClusterRadius: 60,
-  chunkedLoading: true,         // 대량 마커 추가 시 UI 멈춤 방지
-  chunkedInterval: 50,
-  removeOutsideVisibleBounds: true,  // 줌 깊을 때 메모리 절감
-});
-map.addLayer(cluster);
+// ---------- 상태 ----------
+let META = null;
+let activeCluster = createCluster();
+map.addLayer(activeCluster);
+let requestSeq = 0;
+let aborter = null;
+let programmaticMove = false;
 
-// 전국 모드일 때만 viewport bbox 동적 로딩 사용
-let useViewportLoading = false;
-let bboxDebounceTimer = null;
-let META = null;  // 전국 총합 등 메타데이터 (페이지 로드 시 1회 fetch)
+function createCluster() {
+  return L.markerClusterGroup({
+    showCoverageOnHover: false,
+    spiderfyOnMaxZoom: true,
+    maxClusterRadius: 60,
+    chunkedLoading: true,
+    chunkedInterval: 50,
+    removeOutsideVisibleBounds: true,
+  });
+}
+
+function createSchoolMarker(s) {
+  const m = L.circleMarker([s.lat, s.lng], {
+    radius: 5,
+    color: LEVEL_COLORS[s.lv] || '#888',
+    fillColor: LEVEL_COLORS[s.lv] || '#888',
+    fillOpacity: .85,
+    weight: 1,
+  });
+  m.bindPopup(() => `<b>${s.n}</b><br>${s.r} · ${s.lv}<br><small>ID: ${s.id}</small>`);
+  return m;
+}
+
+function setMapLoading(on) {
+  document.getElementById('map-shell').classList.toggle('is-loading', on);
+}
 
 async function loadMeta() {
   try {
     const r = await fetch('/api/schools/meta');
     if (r.ok) META = await r.json();
-  } catch (e) { /* 메타 실패해도 본 기능은 동작 */ }
+  } catch (e) {}
 }
 
-function scheduleBboxLoad() {
-  if (!useViewportLoading) return;
-  clearTimeout(bboxDebounceTimer);
-  bboxDebounceTimer = setTimeout(loadMap, 300);
-}
-map.on('moveend', scheduleBboxLoad);
-
+// ---------- 핵심: D-lite 전환 패턴 ----------
 async function loadMap() {
-  // 진입 시 예약된 bbox 갱신 취소 (setView 트리거되는 moveend와 중복 방지)
-  clearTimeout(bboxDebounceTimer);
+  const seq = ++requestSeq;
+  if (aborter) aborter.abort();
+  aborter = new AbortController();
 
   const region = regionSelect.value;
   const level = document.getElementById('level-select').value;
-  const status = document.getElementById('map-status');
-  const info = document.getElementById('info-panel');
 
-  const wasViewport = useViewportLoading;
-  useViewportLoading = (region === '');
+  setMapLoading(true);
 
-  // 전국 모드 첫 진입: 한반도 중심으로 줌아웃
-  // (북한·일본까지 펼쳐지는 학교 bbox fit는 화면이 너무 멀어져 비활성)
-  if (useViewportLoading && !wasViewport) {
-    map.setView([36.5, 127.8], 7, { animate: false });
-  }
-
-  status.textContent = '로딩…';
-  cluster.clearLayers();
-
+  // 1) fetch 시작 (병렬)
   const params = new URLSearchParams();
   if (region) params.set('region', region);
-  if (level) params.set('level', level);
-  if (useViewportLoading) {
-    const b = map.getBounds();
-    params.set('bbox', `${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()}`);
-  }
+  else        params.set('all', '1');         // 전국 = 12K 한 번
+  if (level)  params.set('level', level);
 
   const t0 = performance.now();
-  let r;
-  try { r = await fetch('/api/schools/map?' + params); }
-  catch (e) { status.textContent = '네트워크 오류'; return; }
-  if (!r.ok) {
-    status.textContent = '오류 ' + r.status;
-    info.innerHTML = '<em style="color:#f88">로딩 실패</em>';
+  const dataPromise = fetch('/api/schools/map?' + params, { signal: aborter.signal })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)));
+
+  // 2) 카메라 이동 (병렬)
+  const target = (region === '')
+    ? { center: [36.5, 127.8], zoom: 7 }
+    : (META?.region_bbox?.[region]
+        ? { bounds: [[META.region_bbox[region].south, META.region_bbox[region].west],
+                     [META.region_bbox[region].north, META.region_bbox[region].east]] }
+        : null);
+  if (target) moveMap(target);
+
+  // 3) 응답 대기
+  let items;
+  try {
+    items = await dataPromise;
+  } catch (e) {
+    if (e.name === 'AbortError') return;            // 중첩 요청
+    setMapLoading(false);
+    document.getElementById('map-status').textContent = '오류: ' + e.message;
     return;
   }
-  const items = await r.json();
+  if (seq !== requestSeq) return;                    // stale 응답 무시
+
   const fetchMs = performance.now() - t0;
 
+  // 4) 새 cluster 빌드 (이전 cluster는 그대로 표시 중)
   const t1 = performance.now();
-  // 마커 일괄 생성 → addLayers([]) 한번에 추가 (개별 addLayer보다 빠름)
-  // 팝업은 lazy: 함수 형태로 바인딩 → 클릭 시점에 HTML 생성
-  const markers = items.map(s => {
-    const m = L.circleMarker([s.lat, s.lng], {
-      radius: 5,
-      color: LEVEL_COLORS[s.lv] || '#888',
-      fillColor: LEVEL_COLORS[s.lv] || '#888',
-      fillOpacity: .85,
-      weight: 1,
-    });
-    m.bindPopup(() => `<b>${s.n}</b><br>${s.r} · ${s.lv}<br><small>ID: ${s.id}</small>`);
-    return m;
-  });
-  cluster.addLayers(markers);
+  const nextCluster = createCluster();
+  nextCluster.addLayers(items.map(createSchoolMarker));
   const renderMs = performance.now() - t1;
 
-  const modeLabel = useViewportLoading ? 'viewport' : 'region';
-  const totalCount = items.length;
-  const grandTotal = META?.total;
-  const countLabel = (useViewportLoading && grandTotal)
-    ? `${totalCount.toLocaleString()} / ${grandTotal.toLocaleString()}`
-    : `${totalCount.toLocaleString()}개`;
-  status.textContent = `${countLabel} · ${modeLabel} · fetch ${fetchMs.toFixed(0)}ms · render ${renderMs.toFixed(0)}ms`;
+  // 5) 카메라 도착 후 cluster 교체
+  swapClusterAfterMove(nextCluster, () => {
+    setMapLoading(false);
+    updatePanel(items, region, level, fetchMs, renderMs);
+  });
+}
+
+function moveMap(target) {
+  programmaticMove = true;
+  const onArrive = () => { programmaticMove = false; };
+
+  if (REDUCED_MOTION) {
+    if (target.center) map.setView(target.center, target.zoom, { animate: false });
+    else map.fitBounds(target.bounds, { padding: [30, 30], animate: false });
+    onArrive();
+    return;
+  }
+  if (target.center) {
+    map.flyTo(target.center, target.zoom, { duration: FLY_DURATION });
+  } else {
+    map.flyToBounds(target.bounds, { padding: [30, 30], duration: FLY_DURATION });
+  }
+  map.once('moveend', onArrive);
+}
+
+function swapClusterAfterMove(nextCluster, after) {
+  const doSwap = () => {
+    map.removeLayer(activeCluster);
+    activeCluster.clearLayers();
+    activeCluster = nextCluster;
+    map.addLayer(activeCluster);
+    if (after) after();
+  };
+  if (programmaticMove) map.once('moveend', doSwap);
+  else doSwap();
+}
+
+function updatePanel(items, region, level, fetchMs, renderMs) {
+  const total = items.length;
+  const grand = META?.total;
+  const isAll = !region;
+  const countLabel = (isAll && grand)
+    ? `${total.toLocaleString()} / ${grand.toLocaleString()}`
+    : `${total.toLocaleString()}개`;
+  document.getElementById('map-status').textContent =
+    `${countLabel} · fetch ${fetchMs.toFixed(0)}ms · render ${renderMs.toFixed(0)}ms`;
 
   const byLevel = {"초":0, "중":0, "고":0};
-  items.forEach(s => byLevel[s.lv] = (byLevel[s.lv]||0) + 1);
-  const total = totalCount;
-  const totalLine = (useViewportLoading && grandTotal)
-    ? `현재 화면 <b>${total.toLocaleString()}</b> / 전국 ${grandTotal.toLocaleString()}`
-    : `총 ${total.toLocaleString()}건`;
-  info.innerHTML = `
-    <div><b>${region || '전국 (viewport)'}${level ? ' · ' + level : ''}</b></div>
+  items.forEach(s => byLevel[s.lv] = (byLevel[s.lv] || 0) + 1);
+
+  const totalLine = (isAll && grand)
+    ? `전국 <b>${total.toLocaleString()}</b> / ${grand.toLocaleString()}`
+    : `총 <b>${total.toLocaleString()}</b>건`;
+
+  document.getElementById('info-panel').innerHTML = `
+    <div><b>${region || '전국'}${level ? ' · ' + level : ''}</b></div>
     <div class="stat">${totalLine}</div>
     <hr>
     <div><span class="legend-dot" style="background:${LEVEL_COLORS['초']}"></span>초 ${byLevel['초'].toLocaleString()}</div>
     <div><span class="legend-dot" style="background:${LEVEL_COLORS['중']}"></span>중 ${byLevel['중'].toLocaleString()}</div>
     <div><span class="legend-dot" style="background:${LEVEL_COLORS['고']}"></span>고 ${byLevel['고'].toLocaleString()}</div>
     <hr>
-    <div class="stat">${useViewportLoading
-      ? '지도 이동/줌 시 자동 새로고침<br>현재 화면 영역만 로드'
-      : '마커 클릭 → 학교 상세<br>클러스터 클릭 → 줌인'}</div>
+    <div class="stat">마커 클릭 → 학교 상세<br>클러스터 클릭 → 줌인</div>
   `;
-
-  // bbox 모드는 사용자 팬과 충돌 → fitBounds 안함
-  // region 모드만 자동 fit
-  if (!useViewportLoading && items.length > 0) {
-    const lats = items.map(s => s.lat);
-    const lngs = items.map(s => s.lng);
-    map.fitBounds([
-      [Math.min(...lats), Math.min(...lngs)],
-      [Math.max(...lats), Math.max(...lngs)]
-    ], { padding: [30, 30] });
-  }
-
-  // setView로 인한 moveend가 예약했을 수 있는 중복 fetch 취소
-  clearTimeout(bboxDebounceTimer);
 }
 
+// ---------- 이벤트 ----------
 regionSelect.addEventListener('change', loadMap);
 document.getElementById('level-select').addEventListener('change', loadMap);
 document.getElementById('reload').addEventListener('click', loadMap);
 
-// 기존 alert + draft 로직
+// ---------- 특보 + 보고서 (기존 그대로) ----------
 async function loadAlerts() {
   const r = await fetch('/api/alerts');
   const data = await r.json();
@@ -267,8 +311,8 @@ async function generate(alert_id) {
     <div class="disclaimer">⚠ ${j.disclaimer}</div>`;
 }
 
+// ---------- 시작 ----------
 loadAlerts();
-// 메타 먼저 로드 후 지도 — 메타 실패해도 지도는 동작
 loadMeta().finally(loadMap);
 </script>
 </body>

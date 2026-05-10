@@ -75,12 +75,21 @@ def create_app() -> Flask:
 
     @app.get("/api/schools/meta")
     def api_schools_meta():
-        """현재 활성 데이터셋의 전체 카운트 + 시도/학교급 분포 + 좌표 bbox."""
-        from collections import Counter
+        """현재 활성 데이터셋의 전체 카운트 + 시도/학교급 분포 + 좌표 bbox.
+
+        응답:
+            total, by_region, by_level
+            bbox        : 전국 학교 좌표 박스
+            region_bbox : {시도명: {south,west,north,east}} - flyToBounds용
+        """
+        from collections import Counter, defaultdict
         schools = load_schools()
         by_region = dict(Counter(s["region"] for s in schools))
         by_level = dict(Counter(s["level"] for s in schools))
+
         bbox = None
+        region_lats: dict = defaultdict(list)
+        region_lngs: dict = defaultdict(list)
         if schools:
             lats = [s["lat"] for s in schools]
             lngs = [s["lng"] for s in schools]
@@ -88,11 +97,26 @@ def create_app() -> Flask:
                 "south": min(lats), "west": min(lngs),
                 "north": max(lats), "east": max(lngs),
             }
+            for s in schools:
+                region_lats[s["region"]].append(s["lat"])
+                region_lngs[s["region"]].append(s["lng"])
+
+        region_bbox = {
+            r: {
+                "south": min(region_lats[r]),
+                "west":  min(region_lngs[r]),
+                "north": max(region_lats[r]),
+                "east":  max(region_lngs[r]),
+            }
+            for r in region_lats
+        }
+
         return jsonify({
             "total": len(schools),
             "by_region": by_region,
             "by_level": by_level,
             "bbox": bbox,
+            "region_bbox": region_bbox,
         })
 
     @app.get("/api/schools/map")
