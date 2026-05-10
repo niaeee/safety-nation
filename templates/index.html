@@ -116,6 +116,14 @@ map.addLayer(cluster);
 // 전국 모드일 때만 viewport bbox 동적 로딩 사용
 let useViewportLoading = false;
 let bboxDebounceTimer = null;
+let META = null;  // 전국 총합 등 메타데이터 (페이지 로드 시 1회 fetch)
+
+async function loadMeta() {
+  try {
+    const r = await fetch('/api/schools/meta');
+    if (r.ok) META = await r.json();
+  } catch (e) { /* 메타 실패해도 본 기능은 동작 */ }
+}
 
 function scheduleBboxLoad() {
   if (!useViewportLoading) return;
@@ -182,14 +190,22 @@ async function loadMap() {
   const renderMs = performance.now() - t1;
 
   const modeLabel = useViewportLoading ? 'viewport' : 'region';
-  status.textContent = `${items.length.toLocaleString()}개 · ${modeLabel} · fetch ${fetchMs.toFixed(0)}ms · render ${renderMs.toFixed(0)}ms`;
+  const totalCount = items.length;
+  const grandTotal = META?.total;
+  const countLabel = (useViewportLoading && grandTotal)
+    ? `${totalCount.toLocaleString()} / ${grandTotal.toLocaleString()}`
+    : `${totalCount.toLocaleString()}개`;
+  status.textContent = `${countLabel} · ${modeLabel} · fetch ${fetchMs.toFixed(0)}ms · render ${renderMs.toFixed(0)}ms`;
 
   const byLevel = {"초":0, "중":0, "고":0};
   items.forEach(s => byLevel[s.lv] = (byLevel[s.lv]||0) + 1);
-  const total = items.length;
+  const total = totalCount;
+  const totalLine = (useViewportLoading && grandTotal)
+    ? `현재 화면 <b>${total.toLocaleString()}</b> / 전국 ${grandTotal.toLocaleString()}`
+    : `총 ${total.toLocaleString()}건`;
   info.innerHTML = `
     <div><b>${region || '전국 (viewport)'}${level ? ' · ' + level : ''}</b></div>
-    <div class="stat">총 ${total.toLocaleString()}건${useViewportLoading ? ' (현재 화면)' : ''}</div>
+    <div class="stat">${totalLine}</div>
     <hr>
     <div><span class="legend-dot" style="background:${LEVEL_COLORS['초']}"></span>초 ${byLevel['초'].toLocaleString()}</div>
     <div><span class="legend-dot" style="background:${LEVEL_COLORS['중']}"></span>중 ${byLevel['중'].toLocaleString()}</div>
@@ -251,7 +267,8 @@ async function generate(alert_id) {
 }
 
 loadAlerts();
-loadMap();
+// 메타 먼저 로드 후 지도 — 메타 실패해도 지도는 동작
+loadMeta().finally(loadMap);
 </script>
 </body>
 </html>

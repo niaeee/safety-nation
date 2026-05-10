@@ -73,6 +73,19 @@ def create_app() -> Flask:
                               limit=limit, offset=offset)
         return jsonify({"count": len(rows), "limit": limit, "offset": offset, "items": rows})
 
+    @app.get("/api/schools/meta")
+    def api_schools_meta():
+        """현재 활성 데이터셋의 전체 카운트 + 시도/학교급 분포."""
+        from collections import Counter
+        schools = load_schools()
+        by_region = dict(Counter(s["region"] for s in schools))
+        by_level = dict(Counter(s["level"] for s in schools))
+        return jsonify({
+            "total": len(schools),
+            "by_region": by_region,
+            "by_level": by_level,
+        })
+
     @app.get("/api/schools/map")
     def api_schools_map():
         """지도용 경량 응답: id/이름/학교급/시도/위경도만 반환.
