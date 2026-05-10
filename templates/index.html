@@ -144,9 +144,16 @@ async function loadMap() {
   const wasViewport = useViewportLoading;
   useViewportLoading = (region === '');
 
-  // 전국 모드 첫 진입: 한반도 전체로 줌아웃 → bbox 계산 시 자동으로 전국 bbox
+  // 전국 모드 첫 진입: 메타의 학교 bbox로 fitBounds → 12,011건 모두 viewport 안
+  // (META 미로드 폴백: 한반도 중심 줌 7)
   if (useViewportLoading && !wasViewport) {
-    map.setView([36.5, 127.8], 7, { animate: false });
+    if (META?.bbox) {
+      const b = META.bbox;
+      map.fitBounds([[b.south, b.west], [b.north, b.east]],
+                    { padding: [20, 20], animate: false });
+    } else {
+      map.setView([36.5, 127.8], 7, { animate: false });
+    }
   }
 
   status.textContent = '로딩…';

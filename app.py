@@ -75,15 +75,24 @@ def create_app() -> Flask:
 
     @app.get("/api/schools/meta")
     def api_schools_meta():
-        """현재 활성 데이터셋의 전체 카운트 + 시도/학교급 분포."""
+        """현재 활성 데이터셋의 전체 카운트 + 시도/학교급 분포 + 좌표 bbox."""
         from collections import Counter
         schools = load_schools()
         by_region = dict(Counter(s["region"] for s in schools))
         by_level = dict(Counter(s["level"] for s in schools))
+        bbox = None
+        if schools:
+            lats = [s["lat"] for s in schools]
+            lngs = [s["lng"] for s in schools]
+            bbox = {
+                "south": min(lats), "west": min(lngs),
+                "north": max(lats), "east": max(lngs),
+            }
         return jsonify({
             "total": len(schools),
             "by_region": by_region,
             "by_level": by_level,
+            "bbox": bbox,
         })
 
     @app.get("/api/schools/map")
